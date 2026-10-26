@@ -160,7 +160,10 @@ export class AlpacaDataProvider implements DataProvider {
     return {
       name: 'alpaca',
       displayName: 'Alpaca (Broker SDK)',
-      capabilities: { enumerate: true, stream: false, symbolInfo: true },
+      // Vela otherwise uses its own rapid fallback polling. We expose a
+      // controlled polling subscription below so each chart owns one cancellable
+      // refresh loop instead of repeatedly reloading full history.
+      capabilities: { enumerate: true, stream: true, symbolInfo: true },
     };
   }
 
@@ -214,6 +217,34 @@ export class AlpacaDataProvider implements DataProvider {
     };
   }
 
+  subscribe(
+    ticker: string,
+    timeframe: string,
+    onBar: Parameters<NonNullable<DataProvider['subscribe']>>[2],
+  ): () => void {
+    const target = parseChartTimeframe(timeframe);
+    const pollMs = Math.min(60_000, Math.max(15_000, Math.round((target?.milliseconds ?? 60_000) / 4)));
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      if (stopped || !this.connected) return;
+      try {
+        const bars = await this.getBars(ticker, timeframe, { limit: 2 });
+        const latest = bars.at(-1);
+        if (!stopped && latest) onBar(latest);
+      } catch (error) {
+        if (!stopped) console.warn(`Alpaca live refresh failed for ${ticker} ${timeframe}:`, error);
+      } finally {
+        if (!stopped) timer = setTimeout(() => void poll(), pollMs);
+      }
+    };
+    timer = setTimeout(() => void poll(), pollMs);
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
+  }
+
 }
 
 export function initializeAlpacaSdkFeed(getWorkspace: () => VelaWorkspace): void {
@@ -238,7 +269,7 @@ export function initializeAlpacaSdkFeed(getWorkspace: () => VelaWorkspace): void
     provider.setConnected(false);
     for (const cell of getWorkspace().cells()) cell.chart.data.unregisterProvider('alpaca');
   };
-  const connect = (event: Event) => {
+  const connect = async (event: Event) => {
     if ((event as CustomEvent<string>).detail !== 'alpaca') {
       disable();
       return;
@@ -246,16 +277,19 @@ export function initializeAlpacaSdkFeed(getWorkspace: () => VelaWorkspace): void
     connected = true;
     revision += 1;
     provider.setConnected(true);
-    void registerWorkspace().catch(error => {
+    try {
+      await registerWorkspace();
+      document.dispatchEvent(new CustomEvent('omega:alpaca-provider-ready'));
+    } catch (error) {
       console.error('Could not register Alpaca Broker SDK chart data:', error);
-    });
+    }
   };
   const disconnect = (event: Event) => {
     if ((event as CustomEvent<string>).detail !== 'alpaca') return;
     disable();
   };
 
-  document.addEventListener('omega:trading-broker-connected', connect);
+  document.addEventListener('omega:trading-broker-connected', event => { void connect(event); });
   document.addEventListener('omega:trading-broker-disconnected', disconnect);
   document.addEventListener('omega:trading-broker-connecting', disable);
   getWorkspace().on('cell:created', event => {

@@ -8,6 +8,7 @@ import {
 import { getMarketFlowStyle, setMarketFlowStyle } from './marketFlowPane';
 import { isOmegaTheme, type OmegaTheme } from './themeControls';
 import type { ChartTabsState } from './chartTabs';
+import type { TopPanelMode } from './topPanelMode';
 
 export interface ChartRendererSettingsOptions {
   getWorkspace(): VelaWorkspace;
@@ -18,6 +19,8 @@ export interface ChartRendererSettingsOptions {
   setCellGroup(cellId: string, group: string): unknown;
   getTheme(): OmegaTheme;
   setTheme(theme: OmegaTheme): void;
+  getTopPanelMode(): TopPanelMode;
+  setTopPanelMode(mode: TopPanelMode): void;
   getBarThickness(): number;
   setBarThickness(value: number): void;
   getLockPriceToBarRatio(): boolean;
@@ -45,6 +48,8 @@ export function registerChartRendererSettings(
     setCellGroup,
     getTheme,
     setTheme,
+    getTopPanelMode,
+    setTopPanelMode,
     getBarThickness,
     setBarThickness,
     getLockPriceToBarRatio,
@@ -138,6 +143,13 @@ export function registerChartRendererSettings(
           options: [['dark', 'Dark blue'], ['light', 'Light'], ['high-contrast', 'High contrast — light blue'], ['high-contrast-dark', 'High contrast — dark blue']],
           get: getTheme,
           set: (theme: string) => setTheme(isOmegaTheme(theme) ? theme : 'dark'),
+        },
+        {
+          kind: 'select',
+          label: 'Top panel size',
+          options: [['classic', 'Classic — compact'], ['large', 'Large — readable controls']],
+          get: getTopPanelMode,
+          set: (mode: string) => setTopPanelMode(mode === 'large' ? 'large' : 'classic'),
         },
         {
           kind: 'color',

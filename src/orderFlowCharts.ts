@@ -64,7 +64,7 @@ export function inferPipSize(symbol: string): number | null {
 
 export function buildRenkoBricks(
   bars: readonly { time: number; open: number; high: number; low: number; close: number }[],
-  options: { mode?: unknown; boxSize?: unknown; atrLength?: unknown; brickPips?: unknown; customBrickPips?: unknown; pipSize?: unknown; symbol?: string } = {},
+  options: { mode?: unknown; source?: unknown; boxSize?: unknown; atrLength?: unknown; brickPips?: unknown; customBrickPips?: unknown; pipSize?: unknown; symbol?: string } = {},
 ): RenkoBrick[] {
   if (bars.length < 2) return [];
   const atrLength = Math.max(1, Math.floor(finiteSetting(options.atrLength, 14)));
@@ -84,7 +84,7 @@ export function buildRenkoBricks(
   let anchor = bars[0].close;
   let direction = 0;
   const bricks: RenkoBrick[] = [];
-  const processTarget = (target: number, source: typeof bars[number], emitted: number[]) => {
+  const processTarget = (target: number, source: typeof bars[number]) => {
     let barBrickCount = 0;
     while (barBrickCount < MAX_BRICKS_PER_BAR && bricks.length < 100_000) {
       let nextDirection = direction;
@@ -115,7 +115,6 @@ export function buildRenkoBricks(
         low: Math.min(open, close),
         close,
       });
-      emitted.push(index);
       anchor = close;
       direction = nextDirection;
       barBrickCount += 1;
@@ -124,23 +123,24 @@ export function buildRenkoBricks(
 
   for (let index = 1; index < bars.length && bricks.length < 100_000; index += 1) {
     const bar = bars[index];
-    const path = bar.close >= bar.open
-      ? [bar.open, bar.low, bar.high, bar.close]
-      : [bar.open, bar.high, bar.low, bar.close];
-    const emitted: number[] = [];
-    for (const target of path) processTarget(target, bar, emitted);
-
-    const lastIndex = emitted[emitted.length - 1];
-    if (lastIndex !== undefined) {
-      const brick = bricks[lastIndex];
-      brick.high = Math.max(brick.high, Math.min(bar.high, brick.high + boxSize));
-      brick.low = Math.min(brick.low, Math.max(bar.low, brick.low - boxSize));
-    }
+    // Tick data is required for an exact non-time-based chart.  With OHLC data
+    // this is the deterministic intrabar approximation used by the UI.
+    const path = options.source === 'close'
+      ? [bar.close]
+      : bar.close >= bar.open
+        ? [bar.open, bar.low, bar.high, bar.close]
+        : [bar.open, bar.high, bar.low, bar.close];
+    for (const target of path) processTarget(target, bar);
   }
   return bricks;
 }
 
-/** cTrader-style range bars: every completed bar spans exactly the selected pip range. */
+/**
+ * Range bars are not Renko: a completed bar has High - Low exactly equal to
+ * the selected range and closes at the High or Low.  There is no two-box
+ * reversal rule.  With candle OHLC input this follows a documented, stable
+ * intrabar path; live tick input can later replace that approximation.
+ */
 export function buildRangeBars(
   bars: readonly { time: number; open: number; high: number; low: number; close: number }[],
   options: { brickPips?: unknown; customBrickPips?: unknown; pipSize?: unknown; symbol?: string } = {},
@@ -151,19 +151,35 @@ export function buildRangeBars(
   const size = configured * pipSize;
   if (!(size > 0) || !Number.isFinite(size)) return [];
   const out: RenkoBrick[] = [];
-  let open = bars[0].open;
-  let high = open;
-  let low = open;
+  let current: RenkoBrick = {
+    time: bars[0].time,
+    open: bars[0].open,
+    high: bars[0].open,
+    low: bars[0].open,
+    close: bars[0].open,
+  };
   for (const bar of bars.slice(1)) {
     const path = bar.close >= bar.open ? [bar.open, bar.low, bar.high, bar.close] : [bar.open, bar.high, bar.low, bar.close];
     for (const target of path) {
-      high = Math.max(high, target); low = Math.min(low, target);
-      while (high - low >= size && out.length < 100_000) {
-        const direction = Math.abs(high - open) >= Math.abs(open - low) ? 1 : -1;
-        const close = open + direction * size;
-        out.push({ time: bar.time, open, high: Math.max(open, close), low: Math.min(open, close), close });
-        open = close;
-        high = Math.max(open, target); low = Math.min(open, target);
+      while (out.length < 100_000) {
+        current.close = target;
+        current.high = Math.max(current.high, target);
+        current.low = Math.min(current.low, target);
+        if (current.high - current.low < size) break;
+
+        // The tick that completes a range is necessarily one of its extremes.
+        // Preserve the actual opening price and the opposite wick.
+        const closesUp = target >= current.low + size;
+        const close = closesUp ? current.low + size : current.high - size;
+        const completed: RenkoBrick = closesUp
+          ? { ...current, time: bar.time, high: close, close }
+          : { ...current, time: bar.time, low: close, close };
+        out.push(completed);
+        current = { time: bar.time, open: close, high: close, low: close, close };
+
+        // A gap can cross several ranges. Feed the same target into the next
+        // bar until its remaining price movement is fully consumed.
+        if (target === close) break;
       }
     }
   }
@@ -178,7 +194,10 @@ function clearLayer(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement, dp
 function renderRenko(args: RendererLayerArgs, canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D) {
   const bricks = isRenkoPayload(args.data) ? args.data : [];
   if (bricks.length === 0) return;
-  const logicalByTime = new Map(args.bars.map((bar, index) => [bar.time, index]));
+  const logicalByTime = new Map<number, number>();
+  args.bars.forEach((bar, index) => {
+    if (!logicalByTime.has(bar.time)) logicalByTime.set(bar.time, index);
+  });
   const pitch = Math.max(1, args.coords.pxPerBar());
   const range = args.coords.visibleLogicalRange();
   const positioned = layoutRenkoBricks(bricks.map(brick => ({
@@ -195,6 +214,12 @@ function renderRenko(args: RendererLayerArgs, canvas: HTMLCanvasElement, ctx: Ca
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
     ctx.lineWidth = 1;
+    const highY = args.coords.priceToY(brick.high, args.scale, args.bounds);
+    const lowY = args.coords.priceToY(brick.low, args.scale, args.bounds);
+    ctx.beginPath();
+    ctx.moveTo(x, highY);
+    ctx.lineTo(x, lowY);
+    ctx.stroke();
     const top = Math.min(openY, closeY);
     const height = Math.max(1, Math.abs(closeY - openY));
     ctx.fillRect(x - width / 2, top, width, height);
@@ -207,20 +232,19 @@ export function layoutRenkoBricks(
   visibleRange: { from: number; to: number },
   pitch: number,
 ): PositionedRenkoBrick[] {
-  const span = visibleRange.to - visibleRange.from;
-  if (!(span > 0) || !(pitch > 0) || !Number.isFinite(pitch)) return [];
-  const visible = entries.filter(entry =>
-    Number.isFinite(entry.logical)
-    && entry.logical >= visibleRange.from
-    && entry.logical <= visibleRange.to,
-  );
-  if (visible.length === 0) return [];
-
-  const spacing = span / visible.length;
-  const width = Math.max(1, Math.min(pitch * 0.82, pitch * spacing * 0.82));
+  if (!(pitch > 0) || !Number.isFinite(pitch)) return [];
+  const sourceVisible = entries.filter(entry => Number.isFinite(entry.logical)
+    && entry.logical >= visibleRange.from - 1 && entry.logical <= visibleRange.to + 1);
+  // A Renko/Range bar has its own sequential x-axis.  Vela supplies the host
+  // candle viewport to layers, so use it only as a window selector, then lay
+  // synthetic bars into consecutive columns (never into time gaps).
+  const capacity = Math.max(1, Math.ceil(visibleRange.to - visibleRange.from) + 2);
+  const visible = sourceVisible.slice(-capacity);
+  const firstLogical = visibleRange.to - visible.length + 0.5;
+  const width = Math.max(2, Math.min(12, pitch * 0.72));
   return visible.map((entry, index) => ({
     brick: entry.brick,
-    logical: visibleRange.from + (index + 0.5) * spacing,
+    logical: firstLogical + index,
     width,
   }));
 }
@@ -319,6 +343,7 @@ const renko: ChartTypeDefinition = {
     title: 'Renko',
     rows: [
       { kind: 'select', key: 'mode', label: 'Brick size mode', options: [['pips', 'Pips (cTrader style)'], ['atr', 'ATR'], ['fixed', 'Fixed price']], defval: 'pips' },
+      { kind: 'select', key: 'source', label: 'Price source', options: [['ohlc', 'OHLC (intrabar approximation)'], ['close', 'Close only']], defval: 'ohlc' },
       { kind: 'select', key: 'brickPips', label: 'Brick size', options: RENKO_PIP_OPTIONS, defval: '5', when: { key: 'mode', equals: 'pips' } },
       { kind: 'number', key: 'customBrickPips', label: 'Custom brick size (1–3,000; 0 = preset)', defval: 0, min: 0, max: 3000, step: 1, when: { key: 'mode', equals: 'pips' } },
       { kind: 'number', key: 'pipSize', label: 'Pip size override (price units, 0 = auto)', defval: 0, min: 0, step: 0.00001, when: { key: 'mode', equals: 'pips' } },

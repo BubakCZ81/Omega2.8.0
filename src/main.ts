@@ -1,6 +1,7 @@
 import { registerLayout, VelaWorkspace } from '@luxalgo/vela/workspace';
 import './styles.css';
 import './editorDrawer';
+import { ensureIndicatorBrowserRegistration, isIndicatorBrowserRegistered } from './indicatorBrowser';
 import { appAssetUrl } from './appPaths';
 import { registerRendererLayer, registerStatePersistence, type IndicatorHandle } from '@luxalgo/vela';
 import { BinanceProvider } from '@luxalgo/vela/providers/binance';
@@ -46,6 +47,8 @@ import { initializeChartSettingsActions } from './chartSettingsActions';
 import { initializeChartContextActions } from './chartContextActions';
 import { registerChartRendererSettings } from './chartRendererSettings';
 import type { ScriptingEngine } from '@luxalgo/vela/plugin';
+import { StartupModuleIndex } from './startupModuleIndex';
+import { applyTopPanelMode, getTopPanelMode, type TopPanelMode } from './topPanelMode';
 // createWindow will be loaded lazily inside openTauriStandaloneEditor
 
 const startupScreen = document.getElementById('omega-startup-screen');
@@ -73,6 +76,10 @@ declare global {
     };
     velaNeural?: {
       saveModel(profile: unknown): Promise<{ file: string }>;
+    };
+    velaVisualBacktestWindow?: {
+      open(config: { symbol: string; timeframe: string; provider?: string }): Promise<boolean>;
+      onOpenConfig(callback: (config: { symbol: string; timeframe: string; provider?: string }) => void): () => void;
     };
   }
 }
@@ -111,7 +118,6 @@ const optionalModuleLoads = Promise.all([
   loadStartupModule('mt5-feed', () => import('./mt5Feed')),
   loadStartupModule('alpaca-feed', () => import('./alpacaFeed')),
   loadStartupModule('pine-editor', () => import('./pineAiAssistant')),
-  loadStartupModule('indicator-browser', () => import('./indicatorBrowser')),
   loadStartupModule('price-bar-ratio', () => import('./priceBarRatioMenu')),
   loadStartupModule('backtest', () => import('./backtestPanel')),
   loadStartupModule('news', () => import('./newsPanel')),
@@ -140,6 +146,8 @@ let currentScriptName = requestedPineScript && scripts[requestedPineScript]
   : Object.keys(scripts)[0] || 'Dual EMA Cross';
 const savedTheme = localStorage.getItem('vela_theme');
 let currentTheme: OmegaTheme = isOmegaTheme(savedTheme) ? savedTheme : 'dark';
+let topPanelMode: TopPanelMode = getTopPanelMode();
+applyTopPanelMode(topPanelMode);
 let workspace: VelaWorkspace;
 let loadedBarsController: LoadedBarsController;
 let workspaceInitialized = false;
@@ -416,6 +424,12 @@ const chartRendererSettingsOptions = {
   setCellGroup: (cellId: string, group: string) => setCellGroup(cellId, group),
   getTheme: () => currentTheme,
   setTheme,
+  getTopPanelMode: () => topPanelMode,
+  setTopPanelMode: (mode: TopPanelMode) => {
+    topPanelMode = mode;
+    applyTopPanelMode(mode);
+    if (workspaceInitialized) workspace.context().stateChanged();
+  },
   getBarThickness: () => barThickness,
   setBarThickness: (value: number) => setBarThickness(value),
   getLockPriceToBarRatio: () => lockPriceToBarRatio,
@@ -445,7 +459,19 @@ function configureChartRenderer(chart: VelaWorkspace['chart'], cellId: string) {
   chart.renderer.set('zoomAnchor', 'cursor');
   const priceBarRatio = createPriceBarRatioController(chart.renderer);
   priceBarRatioControllers.add(priceBarRatio);
-  priceBarRatio.setEnabled(lockPriceToBarRatio);
+  const syncPriceBarRatio = () => {
+    const style = chart.renderer.get('priceStyle');
+    const compatible = style !== 'renko' && style !== 'range';
+    priceBarRatio.setEnabled(lockPriceToBarRatio && compatible);
+    if (!compatible && lockPriceToBarRatio) {
+      window.velaDiagnostics?.record({
+        source: 'chart-style', type: 'compatibility', name: 'price-bar-ratio', status: 'ok',
+        message: `Price-to-bar ratio is suspended for ${style}; it resumes for time-based candles.`,
+      });
+    }
+  };
+  syncPriceBarRatio();
+  chart.on('priceStyle:change', syncPriceBarRatio);
   const bidAskLines = createBidAskLinesController(chart);
   bidAskLinesControllers.set(cellId, bidAskLines);
   futuresMonthBoundaryDisposers.get(cellId)?.();
@@ -503,7 +529,6 @@ const [
   mt5FeedModule,
   alpacaSdkFeedModule,
   pineEditorModule,
-  indicatorBrowserModule,
   priceBarRatioModule,
   backtestModule,
   newsModule,
@@ -534,6 +559,48 @@ workspace.setTheme(velaTheme(currentTheme));
 mt5FeedModule.value?.initializeMt5Feed(() => workspace);
 alpacaSdkFeedModule.value?.initializeAlpacaSdkFeed(() => workspace);
 initializeCTraderFeed(() => workspace);
+
+function waitForAlpacaProvider(): Promise<boolean> {
+  return new Promise(resolve => {
+    const timeout = window.setTimeout(() => {
+      document.removeEventListener('omega:alpaca-provider-ready', ready);
+      resolve(false);
+    }, 4_000);
+    const ready = () => {
+      window.clearTimeout(timeout);
+      document.removeEventListener('omega:alpaca-provider-ready', ready);
+      resolve(true);
+    };
+    document.addEventListener('omega:alpaca-provider-ready', ready, { once: true });
+  });
+}
+
+async function autoConnectPreferredDataFeed(): Promise<void> {
+  const providerReady = waitForAlpacaProvider();
+  const alpacaConnected = await brokerModule.value?.autoConnectSavedAlpaca?.() ?? false;
+  if (!alpacaConnected) {
+    window.velaDiagnostics?.record({
+      source: 'broker-autoconnect', type: 'connection', name: 'binance-fallback', status: 'ok',
+      message: 'No usable saved Alpaca account; using Binance BTCUSDT.',
+    });
+    return;
+  }
+  if (!await providerReady) {
+    window.velaDiagnostics?.record({
+      source: 'broker-autoconnect', type: 'connection', name: 'alpaca-provider', status: 'error',
+      message: 'Alpaca connected but its chart provider did not become ready in time.',
+    });
+    return;
+  }
+  const chart = workspace.active?.chart;
+  if (chart?.market.symbol?.toUpperCase() === 'BTCUSDT') {
+    await chart.setMarket({ symbol: 'alpaca:AAPL', timeframe: chart.market.timeframe ?? '60' });
+  }
+  window.velaDiagnostics?.record({
+    source: 'broker-autoconnect', type: 'connection', name: 'alpaca', status: 'ok',
+    message: 'Saved Alpaca account connected read-only.',
+  });
+}
 
 priceBarRatioModule.value?.initializePriceBarRatioMenu(
   () => lockPriceToBarRatio,
@@ -892,3 +959,82 @@ window.velaDiagnostics?.record({
 });
 console.info(`Omega first interactive UI: ${rendererStartupDuration}ms`);
 void ensurePineRuntime().catch(() => undefined);
+window.setTimeout(() => {
+  void autoConnectPreferredDataFeed().catch(error => {
+    console.error('Could not auto-connect the preferred market-data feed:', error);
+    window.velaDiagnostics?.record({
+      source: 'broker-autoconnect', type: 'connection', name: 'startup', status: 'error',
+      message: error instanceof Error ? error.message : String(error),
+    });
+  });
+}, 0);
+
+// The cTrader-style meter is a chart interaction, not a Trade-panel feature.
+// Load it only after the first usable frame so middle-click works even before
+// the trader opens the panel, without delaying platform startup.
+window.setTimeout(() => {
+  window.velaDiagnostics?.record({
+    source: 'measurement', type: 'lifecycle', name: 'load', status: 'start',
+    message: 'Preparing middle-click measurement tool.',
+  });
+  void ensurePaperTrading().then(() => {
+    window.velaDiagnostics?.record({
+      source: 'measurement', type: 'lifecycle', name: 'ready', status: 'ok',
+      message: 'Middle-click measurement tool is ready.',
+    });
+  }).catch(error => {
+    console.error('Could not initialize middle-click measurement tool:', error);
+    window.velaDiagnostics?.record({
+      source: 'measurement', type: 'lifecycle', name: 'ready', status: 'error',
+      message: error instanceof Error ? error.message : String(error),
+    });
+  });
+}, 0);
+
+const startupModuleIndex = new StartupModuleIndex(entry => window.velaDiagnostics?.record(entry));
+startupModuleIndex.register({
+  id: 'chart-workspace',
+  label: 'Chart workspace',
+  isReady: () => Boolean(workspace.active?.chart && workspace.active.host.isConnected),
+});
+startupModuleIndex.register({
+  id: 'indicator-browser',
+  label: 'Indicators panel',
+  isReady: () => isIndicatorBrowserRegistered(),
+  recover: () => ensureIndicatorBrowserRegistration(),
+});
+startupModuleIndex.register({
+  id: 'chart-timeframe-controls',
+  label: 'Timeframe and chart-style controls',
+  isReady: () => Boolean(document.getElementById('chart-type-select') && document.getElementById('ctrader-timeframe-menu')),
+});
+startupModuleIndex.register({
+  id: 'theme-controls',
+  label: 'Theme controls',
+  isReady: () => document.body.dataset.theme === currentTheme,
+  recover: () => setTheme(currentTheme),
+});
+startupModuleIndex.register({
+  id: 'middle-click-measurement',
+  label: 'Middle-click measurement',
+  isReady: () => paperTradingModule !== null,
+  recover: async () => { await ensurePaperTrading(); },
+});
+startupModuleIndex.register({
+  id: 'pine-runtime',
+  label: 'Pine runtime',
+  isReady: () => pineEngine !== null,
+  recover: async () => { await ensurePineRuntime(); },
+});
+
+// Let deferred modules settle first, then perform one bounded health pass.
+window.setTimeout(() => {
+  void startupModuleIndex.verifyAndRecover().then(result => {
+    const unhealthy = Object.entries(result).filter(([, state]) => state === 'missing' || state === 'failed');
+    window.velaDiagnostics?.record({
+      source: 'startup-index', type: 'summary', name: 'platform-health',
+      status: unhealthy.length ? 'error' : 'ok',
+      message: unhealthy.length ? `Unavailable: ${unhealthy.map(([id]) => id).join(', ')}` : 'All indexed platform modules are ready.',
+    });
+  });
+}, 750);

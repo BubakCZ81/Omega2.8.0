@@ -141,6 +141,8 @@ export function initializeVisualBacktest(
   let startRequestInFlight = false;
   let backtestProviderRevision = 0;
   let activeBacktestProviderName: string | null = null;
+  let sourceProviderName: string | null = null;
+  let sourceProvider: DataProvider | null = null;
 
   const selectActiveStrategy = (): VisualStrategyHandle | null => testCell?.chart.indicators().find(item => item.id === strategySelect.value) ?? null;
 
@@ -270,7 +272,9 @@ export function initializeVisualBacktest(
     const currentSymbol = sourceCell.chart.market.symbol ?? '';
     const resolved = sourceCell.chart.data.resolve(currentSymbol);
     symbol.value = resolved?.ticker ?? currentSymbol.replace(/^[^:]+:/, '');
-    if (resolved?.provider) feed.value = resolved.provider.toLowerCase();
+    sourceProviderName = resolved?.provider?.toLowerCase() ?? null;
+    sourceProvider = sourceProviderName ? sourceCell.chart.data.providerInstance(sourceProviderName) ?? null : null;
+    if (sourceProviderName) feed.value = sourceProviderName;
     timeframe.value = sourceCell.chart.market.timeframe ?? '60';
     populatePeriod();
     status.textContent = 'Set the test period, then start a Visual Backtest tab.';
@@ -312,6 +316,15 @@ export function initializeVisualBacktest(
     try {
       workspace.setActiveCell(testCell.id);
       pausePlayback();
+      // A new tab can be created before optional feeds finish registering on it.
+      // Reuse the exact provider that resolved the source chart so a valid symbol
+      // such as AAPL remains valid in the isolated backtest tab.
+      if (sourceProviderName && sourceProvider) {
+        testCell.chart.data.registerProvider(sourceProviderName, sourceProvider);
+        await testCell.chart.data.ready();
+        populateFeeds(testCell);
+        if ([...feed.options].some(option => option.value === sourceProviderName)) feed.value = sourceProviderName;
+      }
       const marketSymbol = feed.value ? `${feed.value}:${ticker}` : ticker;
       const resolved = testCell.chart.data.resolve(marketSymbol);
       if (!resolved?.provider || !resolved.ticker) {

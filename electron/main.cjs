@@ -13,6 +13,7 @@ const devServerUrl = process.env.OMEGA_DEV_SERVER_URL || `http://127.0.0.1:${pro
 
 let mainWindow = null;
 let pineEditorWindow = null;
+let visualBacktestWindow = null;
 let splashWindow = null;
 let startupFallbackTimer = null;
 let activeBroker = null;
@@ -21,9 +22,6 @@ let providerConnectionRevision = 0;
 let localAiAssistant = null;
 let diagnosticsWindow = null;
 const diagnosticsEntries = [];
-let platformZoomFactor = 1;
-const MIN_PLATFORM_ZOOM = 0.75;
-const MAX_PLATFORM_ZOOM = 1.5;
 const DIAGNOSTICS_LIMIT = 2_000;
 const DIAGNOSTICS_FILE_LIMIT = 10 * 1024 * 1024;
 const diagnosticsFile = path.join(app.getPath('userData'), 'diagnostics.jsonl');
@@ -205,9 +203,9 @@ ipcMain.handle = (channel, listener) => originalIpcHandle(channel, async (...arg
   const event = args[0];
   const source = event?.sender === mainWindow?.webContents
     ? 'main-window'
-    : event?.sender === pineEditorWindow?.webContents
-      ? 'pine-editor'
-      : 'renderer';
+    : event?.sender === pineEditorWindow?.webContents ? 'pine-editor'
+      : event?.sender === visualBacktestWindow?.webContents ? 'visual-backtest'
+        : 'renderer';
   const startedAt = Date.now();
   appendDiagnostic({ source, type: 'method', name: String(channel), status: 'start' });
   try {
@@ -237,20 +235,20 @@ ipcMain.handle = (channel, listener) => originalIpcHandle(channel, async (...arg
 });
 
 ipcMain.on('diagnostics:event', (event, record) => {
-  const trusted = [mainWindow, pineEditorWindow, diagnosticsWindow].some(window => window && !window.isDestroyed() && event.sender === window.webContents);
+  const trusted = [mainWindow, pineEditorWindow, visualBacktestWindow, diagnosticsWindow].some(window => window && !window.isDestroyed() && event.sender === window.webContents);
   if (!trusted || event.senderFrame !== event.sender.mainFrame) return;
   appendDiagnostic(record);
 });
 
 ipcMain.handle('diagnostics:get-recent', async (event) => {
-  const trusted = [mainWindow, pineEditorWindow, diagnosticsWindow].some(window => window && !window.isDestroyed() && event.sender === window.webContents);
+  const trusted = [mainWindow, pineEditorWindow, visualBacktestWindow, diagnosticsWindow].some(window => window && !window.isDestroyed() && event.sender === window.webContents);
   if (!trusted || event.senderFrame !== event.sender.mainFrame) throw new Error('Diagnostics are available only to Omega windows.');
   await diagnosticsReady;
   return { entries: diagnosticsEntries, file: diagnosticsFile };
 });
 
 ipcMain.handle('diagnostics:open', (event) => {
-  const trusted = [mainWindow, pineEditorWindow].some(window => window && !window.isDestroyed() && event.sender === window.webContents);
+  const trusted = [mainWindow, pineEditorWindow, visualBacktestWindow].some(window => window && !window.isDestroyed() && event.sender === window.webContents);
   if (!trusted || event.senderFrame !== event.sender.mainFrame) throw new Error('Diagnostics are available only to Omega windows.');
   return createDiagnosticsWindow();
 });
@@ -307,7 +305,7 @@ async function disconnectAllConnections() {
 }
 
 function assertTrustedBrokerRequest(event) {
-  const trustedWindow = [mainWindow, pineEditorWindow].find(window => window && !window.isDestroyed() && event.sender === window.webContents);
+  const trustedWindow = [mainWindow, pineEditorWindow, visualBacktestWindow].find(window => window && !window.isDestroyed() && event.sender === window.webContents);
   if (!trustedWindow || event.senderFrame !== event.sender.mainFrame) {
     throw new Error('Broker access is available only to the application window.');
   }
@@ -709,24 +707,6 @@ function closeSplash() {
   splashWindow = null;
 }
 
-function normalizePlatformZoom(value) {
-  const zoom = Number(value);
-  if (!Number.isFinite(zoom)) return 1;
-  return Math.round(Math.min(MAX_PLATFORM_ZOOM, Math.max(MIN_PLATFORM_ZOOM, zoom)) * 100) / 100;
-}
-
-ipcMain.handle('app:get-zoom-factor', (event) => {
-  assertTrustedWorkspaceRequest(event);
-  return platformZoomFactor;
-});
-
-ipcMain.handle('app:set-zoom-factor', (event, value) => {
-  assertTrustedWorkspaceRequest(event);
-  if (!mainWindow || event.sender !== mainWindow.webContents) return platformZoomFactor;
-  platformZoomFactor = normalizePlatformZoom(value);
-  return platformZoomFactor;
-});
-
 function showMainWindow() {
   closeSplash();
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show();
@@ -829,6 +809,43 @@ function createPineEditorWindow() {
   }
   return true;
 }
+
+function createVisualBacktestWindow() {
+  if (visualBacktestWindow && !visualBacktestWindow.isDestroyed()) {
+    visualBacktestWindow.focus();
+    return true;
+  }
+  const win = new BrowserWindow({
+    width: 1440, height: 920, minWidth: 1000, minHeight: 680,
+    title: 'Omega Visual Backtest', backgroundColor: '#0b0e14', autoHideMenuBar: true,
+    webPreferences: { preload: path.join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true },
+  });
+  visualBacktestWindow = win;
+  win.on('closed', () => { if (visualBacktestWindow === win) visualBacktestWindow = null; });
+  const isDev = !app.isPackaged && process.env.NODE_ENV !== 'production';
+  if (isDev) void win.loadURL(new URL('visual-backtest.html', `${devServerUrl}/`).href);
+  else void win.loadFile(path.join(__dirname, '../dist/visual-backtest.html'));
+  return true;
+}
+
+ipcMain.handle('visual-backtest:open-window', (event, config) => {
+  assertTrustedWorkspaceRequest(event);
+  if (!mainWindow || event.sender !== mainWindow.webContents) return false;
+  if (!config || typeof config.symbol !== 'string' || typeof config.timeframe !== 'string'
+    || config.symbol.length > 80 || config.timeframe.length > 20
+    || (config.provider !== undefined && typeof config.provider !== 'string')) return false;
+  createVisualBacktestWindow();
+  if (!visualBacktestWindow || visualBacktestWindow.isDestroyed()) return false;
+  const send = () => {
+    if (visualBacktestWindow && !visualBacktestWindow.isDestroyed()) {
+      visualBacktestWindow.webContents.send('visual-backtest:open-config', { symbol: config.symbol, timeframe: config.timeframe, provider: config.provider || '' });
+      visualBacktestWindow.focus();
+    }
+  };
+  if (visualBacktestWindow.webContents.isLoading()) visualBacktestWindow.webContents.once('did-finish-load', send); else send();
+  appendDiagnostic({ source: 'visual-backtest', type: 'window', name: 'opened', status: 'ok', message: `${config.symbol} ${config.timeframe}` });
+  return true;
+});
 
 ipcMain.handle('pine-editor:open-window', (event) => {
   assertTrustedWorkspaceRequest(event);

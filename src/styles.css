@@ -163,8 +163,16 @@ input, textarea, select, [contenteditable="true"],
         position: relative;
       }
 
-#app-container button,
-#app-container [role="button"] {
+/* UI scale deliberately excludes #chart: candle geometry, price scale and
+   cursor coordinates must remain exactly unchanged. Fixed toolbar shells keep
+   the chart in the same place while their controls become more readable. */
+#top-toolbar .toolbar-control-zone,
+#top-toolbar > .trading-account-status,
+#bottom-bar > *,
+#editor-drawer > *,
+#app-container [role="dialog"] > *,
+#app-container .modal-card,
+#omega-neural-network-lab .omega-nn-card {
   zoom: var(--omega-platform-scale);
 }
 
@@ -799,23 +807,33 @@ input, textarea, select, [contenteditable="true"],
       .bottom-bar-left {
         display: flex;
         flex: 1 1 auto;
-        flex-direction: column;
+        flex-direction: row;
         align-items: stretch;
         justify-content: center;
-        gap: 1px;
         min-width: 0;
         padding-right: 16px;
       }
       .trading-session-status {
         display: flex;
         align-items: center;
-        gap: 5px;
-        width: 100%;
-        min-width: 0;
+        justify-content: center;
+        gap: 7px;
+        position: absolute;
+        left: 10px;
+        bottom: 57px;
+        z-index: 45;
+        max-width: min(620px, calc(100% - 32px));
+        padding: 7px 14px;
+        border: 1px solid color-mix(in srgb, var(--omega-border) 80%, var(--omega-accent));
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--omega-surface) 90%, var(--omega-elevated));
+        box-shadow: 0 8px 24px rgb(0 0 0 / 22%), inset 0 1px rgb(255 255 255 / 5%);
         color: var(--omega-text);
-        font-size: 13px;
+        font-size: 12px;
         font-weight: 600;
-        line-height: 17px;
+        line-height: 18px;
+        transform: none;
+        pointer-events: none;
       }
       .trading-session-status[data-open="false"] { color: var(--omega-muted); }
       .trading-session-status > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -849,11 +867,11 @@ input, textarea, select, [contenteditable="true"],
 
       .bottom-tab-btn {
         box-sizing: border-box;
-        height: calc(32px / var(--omega-platform-scale));
-        min-height: calc(32px / var(--omega-platform-scale));
+        height: 32px;
+        min-height: 32px;
         background-color: var(--omega-elevated); border: 1px solid var(--omega-border); border-radius: 4px;
         color: var(--omega-text);
-        padding: calc(4px / var(--omega-platform-scale)) 10px;
+        padding: 4px 10px;
         font-size: 12px; font-weight: 600;
         cursor: pointer; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
         box-shadow: inset 0 1px color-mix(in srgb, var(--omega-text) 10%, transparent);
@@ -1014,9 +1032,9 @@ input, textarea, select, [contenteditable="true"],
       #top-toolbar .btn:hover { color: #fff; background: #2a2e39; }
       #top-toolbar button {
         box-sizing: border-box;
-        height: calc(28px / var(--omega-platform-scale));
-        min-height: calc(28px / var(--omega-platform-scale));
-        padding-block: calc(var(--space-xs) / var(--omega-platform-scale));
+        height: 28px;
+        min-height: 28px;
+        padding-block: var(--space-xs);
         white-space: nowrap;
       }
       #chart-tabs-toggle {
@@ -1069,7 +1087,7 @@ input, textarea, select, [contenteditable="true"],
         padding-top: 4px;
         padding-bottom: 4px;
       }
-      #top-toolbar .toolbar-control-zone { max-width: none; }
+#top-toolbar .toolbar-control-zone { max-width: none; }
       #workspace-profile-name { width: 100px; }
       #update-info-modal {
         position: fixed; inset: 36px 0 28px; z-index: 100000000;
@@ -2124,6 +2142,58 @@ body:not([data-theme="light"]) .omega-measure-sublabel {
 .omega-trade-level-hover canvas { cursor: ns-resize !important; }
 .omega-trade-level-dragging,
 .omega-trade-level-dragging canvas { cursor: grabbing !important; }
+
+/* Large top panel: an alternate desktop layout.  It retains the same DOM and
+   handlers as Classic mode, so switching modes cannot break chart actions. */
+:root[data-top-panel-mode="large"] #top-toolbar {
+  min-height: 64px;
+  height: 64px;
+  padding: 6px 14px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--omega-surface) 92%, #203a62), var(--omega-surface));
+  border-bottom: 1px solid color-mix(in srgb, var(--omega-accent) 34%, var(--omega-border));
+  box-shadow: 0 5px 18px rgba(0, 0, 0, .16);
+}
+:root[data-top-panel-mode="large"] #top-toolbar .toolbar-control-zone {
+  min-height: 50px;
+  gap: 10px;
+  padding: 5px 8px;
+  border-radius: 12px;
+  border-color: color-mix(in srgb, var(--omega-accent) 26%, var(--omega-border));
+  background: color-mix(in srgb, var(--omega-elevated) 92%, #1a355d);
+}
+:root[data-top-panel-mode="large"] #top-toolbar .dock-pill { gap: 8px; font-size: 13px; }
+:root[data-top-panel-mode="large"] #top-toolbar :is(button, select, input, .timeframe-menu summary) {
+  min-height: 40px;
+  height: 40px;
+  padding: 7px 11px;
+  border-radius: 8px !important;
+  font-size: 13px;
+}
+:root[data-top-panel-mode="large"] #top-toolbar .btn { font-weight: 700; letter-spacing: .01em; }
+:root[data-top-panel-mode="large"] #top-toolbar .timeframe-menu { font-size: 13px; }
+:root[data-top-panel-mode="large"] #top-toolbar .timeframe-menu summary { padding: 10px 12px; }
+:root[data-top-panel-mode="large"] #top-toolbar .chart-toolbar-input { padding: 7px 10px; font-size: 13px; }
+:root[data-top-panel-mode="large"] #top-toolbar .dock-pill select { padding: 7px 10px; font-size: 13px; }
+:root[data-top-panel-mode="large"] #top-toolbar .platform-zoom-title,
+:root[data-top-panel-mode="large"] #top-toolbar .trading-account-label { font-size: 12px; }
+:root[data-top-panel-mode="large"] #top-toolbar .platform-zoom-value { width: 58px; min-width: 58px; font-size: 13px; }
+:root[data-top-panel-mode="large"] #top-toolbar .platform-zoom-button { min-width: 36px; font-size: 19px !important; }
+:root[data-top-panel-mode="large"] #top-toolbar .trading-account-status {
+  min-height: 46px;
+  margin-left: 12px;
+  padding: 5px 10px;
+  border-radius: 9px;
+  border: 1px solid color-mix(in srgb, var(--omega-warning) 55%, var(--omega-border));
+  border-left: 4px solid var(--omega-warning);
+  background: color-mix(in srgb, var(--omega-elevated) 90%, #2e240d);
+}
+:root[data-top-panel-mode="large"] #top-toolbar .trading-account-status select { min-width: 175px; padding: 7px 9px; font-size: 13px; }
+:root[data-top-panel-mode="large"] #top-toolbar .trading-account-status strong,
+:root[data-top-panel-mode="large"] #top-toolbar .trading-account-status .trading-account-summary > span { font-size: 11px; }
+@media (max-width: 1180px) {
+  :root[data-top-panel-mode="large"] #top-toolbar { overflow-x: auto; overflow-y: visible; }
+  :root[data-top-panel-mode="large"] #top-toolbar .trading-account-status { display: none; }
+}
 
 #activity-console {
   position: fixed;

@@ -699,6 +699,43 @@ async function connectReadOnly() {
   }
 }
 
+/** Starts the same read-only Alpaca flow as the Broker panel, using only
+ * credentials already encrypted by Electron on this device. */
+export async function autoConnectSavedAlpaca(): Promise<boolean> {
+  const bridge = window.velaBroker;
+  if (!bridge?.hasSavedAlpacaCredentials) return false;
+  try {
+    if (!await bridge.hasSavedAlpacaCredentials()) return false;
+    document.dispatchEvent(new CustomEvent('omega:trading-broker-connecting', { detail: 'alpaca' }));
+    setStatus('Connecting to saved Alpaca account (read-only)…');
+    const startedAt = performance.now();
+    const snapshot = await bridge.connectReadOnly('alpaca', {});
+    activeBrokerId = 'alpaca';
+    renderSnapshot(snapshot);
+    document.dispatchEvent(new CustomEvent('omega:connection-latency', { detail: performance.now() - startedAt }));
+    document.dispatchEvent(new CustomEvent('omega:trading-broker-connected', { detail: 'alpaca' }));
+    if (refreshButton) refreshButton.hidden = false;
+    if (disconnectButton) disconnectButton.hidden = false;
+    setStatus('Connected to saved Alpaca account (read-only).');
+    const firstAccount = snapshot.accounts[0]?.name;
+    const accountId = firstAccount ? `alpaca:${firstAccount}` : '';
+    const accountSelect = document.getElementById('trading-account-select') as HTMLSelectElement | null;
+    if (accountSelect && accountId) {
+      accountSelect.value = accountId;
+      accountSelect.dispatchEvent(new Event('change'));
+    }
+    return true;
+  } catch (error) {
+    activeBrokerId = null;
+    setStatus(`Saved Alpaca auto-connect failed: ${error instanceof Error ? error.message : String(error)}`, true);
+    window.velaDiagnostics?.record({
+      source: 'broker-autoconnect', type: 'connection', name: 'alpaca', status: 'error',
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+}
+
 async function saveAlpacaCredentials() {
   if (!window.velaBroker || selectedBroker()?.id !== 'alpaca' || !saveCredentialsButton) return;
   const apiKey = fieldsHost?.querySelector<HTMLInputElement>('input[data-credential-key="apiKey"]')?.value.trim() ?? '';

@@ -467,12 +467,23 @@ document.addEventListener('keydown', event => {
   if (event.key === 'Escape') closeIndicatorBrowser();
 });
 
-registerWidgetAction({
-  id: 'indicators',
-  target: 'topbar',
-  label: 'Indicators',
-  icon: 'indicators',
-  align: 'left',
-  order: 10,
-  run: context => { void openIndicatorBrowser(context); },
-});
+let indicatorBrowserRegistered = false;
+
+export function ensureIndicatorBrowserRegistration(): void {
+  registerWidgetAction({
+    id: 'indicators',
+    target: 'topbar',
+    label: 'Indicators',
+    icon: 'indicators',
+    align: 'left',
+    order: 10,
+    run: context => { void openIndicatorBrowser(context); },
+  });
+  indicatorBrowserRegistered = true;
+}
+
+export function isIndicatorBrowserRegistered(): boolean {
+  return indicatorBrowserRegistered;
+}
+
+ensureIndicatorBrowserRegistration();

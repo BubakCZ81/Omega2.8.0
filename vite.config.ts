@@ -21,6 +21,7 @@ export default defineConfig({
       input: {
         main: fileURLToPath(new URL('./index.html', import.meta.url)),
         pineEditor: fileURLToPath(new URL('./pine-editor.html', import.meta.url)),
+        visualBacktest: fileURLToPath(new URL('./visual-backtest.html', import.meta.url)),
       },
     },
   },

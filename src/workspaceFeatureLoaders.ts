@@ -99,6 +99,15 @@ export function createWorkspaceFeatureLoaders(options: WorkspaceFeatureLoaderOpt
   }
 
   async function openVisualBacktest(): Promise<void> {
+    const sourceChart = options.workspace.active?.chart;
+    const symbol = sourceChart?.market.symbol;
+    const timeframe = sourceChart?.market.timeframe;
+    if (window.velaVisualBacktestWindow && symbol && timeframe) {
+      const resolved = sourceChart.data.resolve(symbol);
+      const opened = await window.velaVisualBacktestWindow.open({ symbol, timeframe, provider: resolved?.provider });
+      if (!opened) throw new Error('Visual Backtest window could not be opened.');
+      return;
+    }
     if (visualBacktestInitialization) return visualBacktestInitialization;
     visualBacktestInitialization = (async () => {
       await ensureChartTabs();

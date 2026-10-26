@@ -118,10 +118,15 @@ ipcRenderer.on('pine-editor:open-script', (_event, script) => {
   else for (const callback of pineOpenScriptCallbacks) callback(script);
 });
 
+let pendingVisualBacktestConfig = null;
+const visualBacktestConfigCallbacks = new Set();
+ipcRenderer.on('visual-backtest:open-config', (_event, config) => {
+  if (visualBacktestConfigCallbacks.size === 0) pendingVisualBacktestConfig = config;
+  else for (const callback of visualBacktestConfigCallbacks) callback(config);
+});
+
 contextBridge.exposeInMainWorld('velaApp', {
   ready: () => ipcRenderer.send('app:ready'),
-  getZoomFactor: () => ipcRenderer.invoke('app:get-zoom-factor'),
-  setZoomFactor: (factor) => ipcRenderer.invoke('app:set-zoom-factor', factor),
 });
 
 contextBridge.exposeInMainWorld('velaDiagnostics', {
@@ -226,5 +231,18 @@ contextBridge.exposeInMainWorld('velaPineEditorWindow', {
       callback(script);
     }
     return () => pineOpenScriptCallbacks.delete(callback);
+  },
+});
+
+contextBridge.exposeInMainWorld('velaVisualBacktestWindow', {
+  open: (config) => ipcRenderer.invoke('visual-backtest:open-window', config),
+  onOpenConfig: (callback) => {
+    visualBacktestConfigCallbacks.add(callback);
+    if (pendingVisualBacktestConfig) {
+      const config = pendingVisualBacktestConfig;
+      pendingVisualBacktestConfig = null;
+      queueMicrotask(() => callback(config));
+    }
+    return () => visualBacktestConfigCallbacks.delete(callback);
   },
 });

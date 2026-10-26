@@ -1,6 +1,6 @@
 const STORAGE_KEY = 'omega_platform_zoom_factor';
-const MIN_ZOOM = 0.75;
-const MAX_ZOOM = 1.5;
+const MIN_ZOOM = 0.8;
+const MAX_ZOOM = 1.3;
 const STEP = 0.1;
 
 export function initializePlatformZoom(): void {
@@ -25,6 +25,7 @@ export function initializePlatformZoom(): void {
     localStorage.setItem(STORAGE_KEY, String(zoom));
     updateControls();
     document.documentElement.style.setProperty('--omega-platform-scale', String(zoom));
+    window.velaDiagnostics?.record({ source: 'platform-zoom', type: 'ui', name: 'ui-scale', status: 'ok', message: `${Math.round(zoom * 100)}%` });
   }
 
   function readInput(): number | null {
